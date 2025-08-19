@@ -65,6 +65,7 @@ program
   .option('--setting <setting>', 'install specific setting component (supports comma-separated values)')
   .option('--hook <hook>', 'install specific hook component (supports comma-separated values)')
   .option('--workflow <workflow>', 'install workflow from hash (#hash) OR workflow YAML (base64 encoded) when used with --agent/--command/--mcp')
+  .option('--search <query>', 'search for components across agents, commands, settings, hooks, and MCPs')
   .option('--prompt <prompt>', 'execute the provided prompt in Claude Code after installation')
   .action(async (options) => {
     try {

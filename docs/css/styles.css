@@ -94,9 +94,22 @@ body {
     margin-right: 0.5rem;
 }
 
+.header-actions-container {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    align-items: flex-end;
+}
+
 .header-actions {
     display: flex;
     gap: 1rem;
+    align-items: center;
+}
+
+.header-search-row {
+    display: flex;
+    gap: 0.5rem;
     align-items: center;
 }
 

@@ -11,13 +11,15 @@ function toggleSearch() {
     const container = document.getElementById('searchBarContainer');
     const input = document.getElementById('searchInput');
     const searchBtn = document.getElementById('searchToggleBtn');
+    const headerSearchBtn = document.querySelector('.search-header-btn');
     const categoryLabels = document.querySelectorAll('.category-filter-label');
     
     if (searchActive) {
         // Hide search and show category sections
         container.style.display = 'none';
         searchActive = false;
-        searchBtn.classList.remove('active');
+        if (searchBtn) searchBtn.classList.remove('active');
+        if (headerSearchBtn) headerSearchBtn.classList.remove('active');
         clearSearch();
         
         // Show category filter labels/sections
@@ -28,7 +30,8 @@ function toggleSearch() {
         // Show search and hide category sections
         container.style.display = 'block';
         searchActive = true;
-        searchBtn.classList.add('active');
+        if (searchBtn) searchBtn.classList.add('active');
+        if (headerSearchBtn) headerSearchBtn.classList.add('active');
         input.focus();
         
         // Hide category filter labels/sections only (keep filter buttons visible)
@@ -177,7 +180,7 @@ async function loadComponentsForSearch() {
  * Perform search across all loaded components
  */
 function performSearch(query) {
-    if (!query || query.length < 3) {
+    if (!query || query.length < 2) {
         updateSearchResults([]);
         return;
     }
@@ -213,7 +216,53 @@ function performSearch(query) {
     
     searchResults = results;
     updateSearchResults(results, categoryMatches);
-    displaySearchResults(results);
+    displaySearchResults(results, normalizedQuery);
+}
+
+/**
+ * Calculate fuzzy match score for two strings
+ */
+function calculateFuzzyScore(text, query) {
+    if (!text || !query) return 0;
+    
+    text = text.toLowerCase();
+    query = query.toLowerCase();
+    
+    // Exact match gets highest score
+    if (text === query) return 100;
+    
+    // Check if text starts with query
+    if (text.startsWith(query)) return 80;
+    
+    // Check if text contains query
+    if (text.includes(query)) return 60;
+    
+    // Fuzzy matching - character by character
+    let score = 0;
+    let textIndex = 0;
+    let queryIndex = 0;
+    let consecutiveMatches = 0;
+    
+    while (textIndex < text.length && queryIndex < query.length) {
+        if (text[textIndex] === query[queryIndex]) {
+            consecutiveMatches++;
+            queryIndex++;
+            // Bonus for consecutive character matches
+            score += consecutiveMatches * 2;
+        } else {
+            consecutiveMatches = 0;
+        }
+        textIndex++;
+    }
+    
+    // If we matched all query characters, add bonus based on completion
+    if (queryIndex === query.length) {
+        score += 20;
+        // Bonus for shorter text (more relevant)
+        score += Math.max(0, 50 - text.length);
+    }
+    
+    return Math.min(score, 90); // Cap fuzzy score below exact matches
 }
 
 /**
@@ -223,46 +272,62 @@ function calculateMatchScore(component, query, category) {
     let score = 0;
     
     // Category name match (highest priority)
-    if (category.includes(query)) {
-        score += 100;
+    const categoryScore = calculateFuzzyScore(category, query);
+    if (categoryScore > 0) {
+        score += categoryScore + 20; // Bonus for category matches
     }
     
     // Component name/title match
-    const name = (component.name || component.title || '').toLowerCase();
-    if (name.includes(query)) {
-        score += name.startsWith(query) ? 80 : 60;
+    const name = component.name || component.title || '';
+    const nameScore = calculateFuzzyScore(name, query);
+    if (nameScore > 0) {
+        score += nameScore + 10; // Bonus for name matches
     }
     
     // Description match
-    const description = (component.description || '').toLowerCase();
-    if (description.includes(query)) {
-        score += 30;
+    const description = component.description || '';
+    const descScore = calculateFuzzyScore(description, query);
+    if (descScore > 0) {
+        score += Math.floor(descScore * 0.5); // Lower weight for description
     }
     
     // Tags match
     if (component.tags && Array.isArray(component.tags)) {
-        const tagMatch = component.tags.some(tag => 
-            tag.toLowerCase().includes(query)
-        );
-        if (tagMatch) {
-            score += 40;
+        let bestTagScore = 0;
+        component.tags.forEach(tag => {
+            const tagScore = calculateFuzzyScore(tag, query);
+            bestTagScore = Math.max(bestTagScore, tagScore);
+        });
+        if (bestTagScore > 0) {
+            score += bestTagScore + 5; // Small bonus for tag matches
         }
     }
     
     // Keywords match (for settings/hooks)
     if (component.keywords) {
-        const keywordMatch = component.keywords.toLowerCase().includes(query);
-        if (keywordMatch) {
-            score += 25;
+        const keywordScore = calculateFuzzyScore(component.keywords, query);
+        if (keywordScore > 0) {
+            score += Math.floor(keywordScore * 0.4);
         }
     }
     
     // Path match (for file-based components)
     if (component.path) {
-        const pathMatch = component.path.toLowerCase().includes(query);
-        if (pathMatch) {
-            score += 15;
+        const pathScore = calculateFuzzyScore(component.path, query);
+        if (pathScore > 0) {
+            score += Math.floor(pathScore * 0.3);
         }
+    }
+    
+    // Multi-word query support
+    if (query.includes(' ')) {
+        const words = query.split(' ').filter(word => word.length > 1);
+        let multiWordScore = 0;
+        words.forEach(word => {
+            const wordScore = calculateMatchScore(component, word, category);
+            multiWordScore += Math.floor(wordScore * 0.3); // Lower weight for individual words
+        });
+        score += multiWordScore;
     }
     
     return score;
@@ -329,7 +394,7 @@ function updateSearchResults(results, categoryMatches = new Set()) {
 /**
  * Display search results in the grid
  */
-function displaySearchResults(results) {
+function displaySearchResults(results, searchQuery = '') {
     const unifiedGrid = document.getElementById('unifiedGrid');
     
     if (!unifiedGrid) {
@@ -383,7 +448,7 @@ function displaySearchResults(results) {
         `;
         
         categoryResults.forEach(component => {
-            html += generateComponentCard(component, category);
+            html += generateComponentCard(component, category, searchQuery);
         });
         
         html += `
@@ -410,13 +475,27 @@ function getCategoryIcon(category) {
 }
 
 /**
+ * Highlight search terms in text
+ */
+function highlightSearchTerms(text, searchQuery) {
+    if (!text || !searchQuery || searchQuery.length < 2) return text;
+    
+    const regex = new RegExp(`(${searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    return text.replace(regex, '<mark class="search-highlight">$1</mark>');
+}
+
+/**
  * Generate component card HTML (matching existing template-card format)
  */
-function generateComponentCard(component, category) {
+function generateComponentCard(component, category, searchQuery = '') {
     const name = component.name || component.title || 'Unnamed Component';
     const description = component.description || 'No description available';
     const tags = component.tags || [];
     const displayName = name.replace(/[-_]/g, ' ');
+    
+    // Highlight search terms if provided
+    const highlightedDisplayName = searchQuery ? highlightSearchTerms(displayName, searchQuery) : displayName;
+    const highlightedDescription = searchQuery ? highlightSearchTerms(description, searchQuery) : description;
     
     // Generate installation command based on category
     const installCommand = generateInstallCommand(component, category);
@@ -432,8 +511,8 @@ function generateComponentCard(component, category) {
             <div class="card-inner">
                 <div class="card-front">
                     <div class="component-type-badge">${getCategoryIcon(category)} ${category}</div>
-                    <h3 class="card-title">${displayName}</h3>
-                    <p class="card-description">${description.length > 100 ? description.substring(0, 100) + '...' : description}</p>
+                    <h3 class="card-title">${highlightedDisplayName}</h3>
+                    <p class="card-description">${highlightedDescription.length > 100 ? highlightedDescription.substring(0, 100) + '...' : highlightedDescription}</p>
                     ${tags.length > 0 ? `
                         <div class="card-tags">
                             ${tags.slice(0, 3).map(tag => `<span class="tag">${tag}</span>`).join('')}
@@ -511,14 +590,46 @@ document.addEventListener('DOMContentLoaded', function() {
     // Load components for search
     loadComponentsForSearch();
     
+    // Add keyboard shortcut for search (Ctrl+K or Cmd+K)
+    document.addEventListener('keydown', function(event) {
+        // Check for Ctrl+K (Windows/Linux) or Cmd+K (Mac)
+        if ((event.ctrlKey || event.metaKey) && event.key === 'k') {
+            event.preventDefault();
+            toggleSearch();
+            
+            // Focus search input after a short delay to ensure it's visible
+            setTimeout(() => {
+                const searchInput = document.getElementById('searchInput');
+                if (searchInput && searchInput.offsetParent !== null) {
+                    searchInput.focus();
+                }
+            }, 100);
+        }
+        
+        // Also handle Escape key globally to close search
+        if (event.key === 'Escape' && searchActive) {
+            toggleSearch();
+        }
+    });
+    
     // Add CSS for search functionality if not already present
     if (!document.getElementById('search-styles')) {
         const searchStyles = document.createElement('style');
         searchStyles.id = 'search-styles';
         searchStyles.textContent = `
-            .search-btn.active {
+            .search-btn.active,
+            .search-header-btn.active {
                 background-color: var(--accent-color, #00d4aa) !important;
                 color: var(--bg-color, #0a0e0f) !important;
+            }
+            
+            
+            .search-highlight {
+                background: var(--accent-color, #00d4aa);
+                color: var(--bg-color, #0a0e0f);
+                padding: 0.1em 0.2em;
+                border-radius: 3px;
+                font-weight: 600;
             }
             
             .search-bar-container {
@@ -846,8 +957,8 @@ document.addEventListener('DOMContentLoaded', function() {
             
             /* View Details and Add to Stack buttons */
             .search-result-card .view-files-btn {
-                background: rgba(0, 255, 0, 0.2); /* Debug background */
-                border: 2px solid lime; /* Debug border */
+                background: var(--bg-secondary, #1a1f23);
+                border: 1px solid var(--border-color, #2a3338);
                 color: var(--text-color, #ffffff);
                 padding: 0.4rem 0.6rem;
                 border-radius: 4px;
@@ -870,9 +981,9 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             
             .search-result-card .add-to-cart-btn {
-                background: rgba(255, 255, 0, 0.5); /* Debug background */
-                border: 2px solid yellow; /* Debug border */
-                color: black; /* Debug text color */
+                background: var(--accent-color, #00d4aa);
+                border: 1px solid var(--accent-color, #00d4aa);
+                color: var(--bg-color, #0a0e0f);
                 padding: 0.4rem 0.6rem;
                 border-radius: 4px;
                 font-weight: 600;
@@ -903,9 +1014,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 gap: 0.4rem;
                 width: 100%;
                 margin-top: auto;
-                background: rgba(255, 0, 0, 0.1); /* Debug background */
-                border: 1px solid red; /* Debug border */
-                padding: 4px; /* Debug padding */
+                padding: 0;
             }
             
             @media (max-width: 768px) {

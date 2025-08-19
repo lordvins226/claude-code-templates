@@ -148,6 +148,12 @@ async function createClaudeConfig(options = {}) {
     return;
   }
   
+  // Handle search functionality
+  if (options.search) {
+    await runSearch(options.search, options);
+    return;
+  }
+  
   // Handle analytics dashboard
   if (options.analytics) {
     trackingService.trackAnalyticsDashboard({ page: 'dashboard', source: 'command_line' });
@@ -1923,6 +1929,263 @@ ${workflowData.steps.map((step, index) => `# ${index + 1}. ${step.description} (
 `;
   
   return yaml;
+}
+
+/**
+ * Run search functionality from CLI
+ */
+async function runSearch(searchQuery, options = {}) {
+  console.log(chalk.blue(`🔍 Searching for components: "${searchQuery}"`));
+  
+  try {
+    // Load the components data for searching
+    const componentsData = await loadComponentsData();
+    
+    if (!componentsData) {
+      console.log(chalk.red('❌ Failed to load components data'));
+      return;
+    }
+    
+    // Perform search across all categories
+    const results = performSearchCLI(searchQuery, componentsData);
+    
+    if (results.length === 0) {
+      console.log(chalk.yellow(`\n📋 No components found for "${searchQuery}"`));
+      console.log(chalk.gray('Try searching for:'));
+      console.log(chalk.gray('  • Categories: agents, commands, settings, hooks, mcps'));
+      console.log(chalk.gray('  • Technologies: react, python, git, telegram, api'));
+      console.log(chalk.gray('  • Features: security, performance, automation, notifications'));
+      return;
+    }
+    
+    // Display results grouped by category
+    console.log(chalk.green(`\n✅ Found ${results.length} component(s):\n`));
+    
+    const groupedResults = {};
+    results.forEach(result => {
+      if (!groupedResults[result.category]) {
+        groupedResults[result.category] = [];
+      }
+      groupedResults[result.category].push(result);
+    });
+    
+    Object.keys(groupedResults).forEach(category => {
+      const categoryResults = groupedResults[category];
+      const categoryIcon = getCategoryIconCLI(category);
+      const categoryName = category.charAt(0).toUpperCase() + category.slice(1);
+      
+      console.log(chalk.cyan(`${categoryIcon} ${categoryName} (${categoryResults.length}):`));
+      
+      categoryResults.forEach((component, index) => {
+        const name = component.name || component.title || 'Unnamed Component';
+        const description = component.description || 'No description available';
+        const installCommand = generateInstallCommandCLI(component, category);
+        
+        console.log(chalk.white(`  ${index + 1}. ${name}`));
+        console.log(chalk.gray(`     ${description.substring(0, 80)}${description.length > 80 ? '...' : ''}`));
+        console.log(chalk.blue(`     Install: ${installCommand}`));
+        console.log('');
+      });
+    });
+    
+    // Show interactive installation option
+    if (!options.yes && results.length > 0) {
+      console.log(chalk.yellow('💡 Use --yes to install components directly:'));
+      console.log(chalk.gray(`   npx claude-code-templates --search="${searchQuery}" --yes`));
+    }
+    
+    // If --yes flag is provided, ask which component to install
+    if (options.yes && results.length > 0) {
+      await handleInteractiveInstallation(results, options);
+    }
+    
+  } catch (error) {
+    console.log(chalk.red(`❌ Search error: ${error.message}`));
+  }
+}
+
+/**
+ * Load components data from GitHub or local cache
+ */
+async function loadComponentsData() {
+  try {
+    // Try to load from GitHub repository
+    const categories = ['agents', 'commands', 'settings', 'hooks', 'mcps'];
+    const componentsData = {};
+    
+    for (const category of categories) {
+      try {
+        const response = await fetch(`https://raw.githubusercontent.com/davila7/claude-code-templates/main/docs/components.json`);
+        if (response.ok) {
+          const data = await response.json();
+          componentsData[category] = data[category] || [];
+        }
+      } catch (error) {
+        console.warn(`Warning: Could not load ${category} data`);
+        componentsData[category] = [];
+      }
+    }
+    
+    return componentsData;
+  } catch (error) {
+    console.warn('Warning: Could not load components data from GitHub');
+    return null;
+  }
+}
+
+/**
+ * Perform search across loaded components (CLI version)
+ */
+function performSearchCLI(query, componentsData) {
+  const normalizedQuery = query.toLowerCase().trim();
+  const results = [];
+  
+  Object.keys(componentsData).forEach(category => {
+    const components = componentsData[category];
+    if (!components || !Array.isArray(components)) return;
+    
+    components.forEach(component => {
+      const matchScore = calculateMatchScoreCLI(component, normalizedQuery, category);
+      
+      if (matchScore > 0) {
+        results.push({
+          ...component,
+          category: category,
+          matchScore: matchScore
+        });
+      }
+    });
+  });
+  
+  // Sort by match score (highest first)
+  results.sort((a, b) => b.matchScore - a.matchScore);
+  
+  return results.slice(0, 20); // Limit to top 20 results
+}
+
+/**
+ * Calculate match score for CLI search
+ */
+function calculateMatchScoreCLI(component, query, category) {
+  let score = 0;
+  
+  // Category name match
+  if (category.includes(query)) {
+    score += 100;
+  }
+  
+  // Component name/title match
+  const name = (component.name || component.title || '').toLowerCase();
+  if (name.includes(query)) {
+    score += name.startsWith(query) ? 80 : 60;
+  }
+  
+  // Description match
+  const description = (component.description || '').toLowerCase();
+  if (description.includes(query)) {
+    score += 30;
+  }
+  
+  // Tags match
+  if (component.tags && Array.isArray(component.tags)) {
+    const tagMatch = component.tags.some(tag => 
+      tag.toLowerCase().includes(query)
+    );
+    if (tagMatch) {
+      score += 40;
+    }
+  }
+  
+  return score;
+}
+
+/**
+ * Get category icon for CLI
+ */
+function getCategoryIconCLI(category) {
+  const icons = {
+    agents: '🤖',
+    commands: '⚡',
+    settings: '⚙️',
+    hooks: '🪝',
+    mcps: '🔌'
+  };
+  return icons[category] || '📦';
+}
+
+/**
+ * Generate installation command for CLI
+ */
+function generateInstallCommandCLI(component, category) {
+  let name = component.name || component.path || component.title;
+  let categoryParam = category.slice(0, -1); // Remove 's' from category name
+  
+  // Handle special cases for category parameters
+  if (category === 'settings' || category === 'hooks') {
+    if (component.path) {
+      name = component.path.replace(/\.(json|md)$/, '');
+    }
+    categoryParam = category.slice(0, -1);
+  }
+  
+  return `npx claude-code-templates --${categoryParam}=${name} --yes`;
+}
+
+/**
+ * Handle interactive installation after search
+ */
+async function handleInteractiveInstallation(results, options) {
+  
+  const choices = results.map((component, index) => ({
+    name: `${component.name || component.title} (${component.category})`,
+    value: index,
+    short: component.name || component.title
+  }));
+  
+  choices.push({
+    name: 'Cancel',
+    value: -1,
+    short: 'Cancel'
+  });
+  
+  const { selectedIndex } = await inquirer.prompt([{
+    type: 'list',
+    name: 'selectedIndex',
+    message: 'Which component would you like to install?',
+    choices: choices
+  }]);
+  
+  if (selectedIndex === -1) {
+    console.log(chalk.yellow('⏹️  Installation cancelled.'));
+    return;
+  }
+  
+  const selectedComponent = results[selectedIndex];
+  const category = selectedComponent.category;
+  const componentName = selectedComponent.name || selectedComponent.path || selectedComponent.title;
+  
+  // Install the selected component
+  console.log(chalk.blue(`Installing ${category}: ${componentName}...`));
+  
+  const targetDir = options.directory || process.cwd();
+  
+  try {
+    if (category === 'agents') {
+      await installIndividualAgent(componentName, targetDir, options);
+    } else if (category === 'commands') {
+      await installIndividualCommand(componentName, targetDir, options);
+    } else if (category === 'mcps') {
+      await installIndividualMCP(componentName, targetDir, options);
+    } else if (category === 'settings') {
+      await installIndividualSetting(componentName, targetDir, options);
+    } else if (category === 'hooks') {
+      await installIndividualHook(componentName, targetDir, options);
+    }
+    
+    console.log(chalk.green(`✅ Successfully installed ${componentName}!`));
+  } catch (error) {
+    console.log(chalk.red(`❌ Failed to install ${componentName}: ${error.message}`));
+  }
 }
 
 /**
